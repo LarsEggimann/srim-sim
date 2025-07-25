@@ -25,7 +25,7 @@ tot_dx = sorted(list(thickness_set))
 
 print("Possible Al combination (in µm):", tot_dx)
 
-sub_set = tot_dx[1:3] # remove the first element for obvious reasons
+sub_set = tot_dx[1:] # remove the first element for obvious reasons
 
 print("Selected thicknesses for simulation (in µm):", sub_set)
 
