@@ -1,34 +1,68 @@
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from tqdm import tqdm
+import numpy as np # type: ignore
+import pandas as pd # type: ignore
+import plotly.graph_objects as go # type: ignore
+from tqdm import tqdm # type: ignore
+from uncertainties import ufloat # type: ignore
 import os
 import shutil
 import subprocess
+from typing import Literal
 from pathlib import Path
 from itertools import product
 
-# Define available foil thicknesses and maximum number of each type
-dx = [25, 50, 125, 200, 300]  # µm - foil thicknesses available
-dx_err = 5  # µm
+# --------- Foils Setup ---------
+alu_foil_thickness = 13 # µm, thickness of the aluminum foil used to cover the targets
+foil = Literal[25, 50, 125, 200, 300]  # type for a single foil thickness in µm
+foil_err = 5  # µm
+foils: list[ufloat] = [ufloat(25, foil_err), ufloat(50, foil_err), ufloat(125, foil_err), ufloat(200, foil_err), ufloat(300, foil_err)]  # µm - available foils
 
 n = 4  # maximum number of each foil type
 
+# helper class to group the thickness and its corresponding foils combinations
+# this helps me to wrap my head around the combinations because I am too stupid for combinatorics
+class Thickness:
+    dx: ufloat
+    foils: list[str]
+    def __init__(self, dx: ufloat, foils: list[str]):
+        self.dx = dx
+        self.foils = foils
+
 # Generate all possible thickness combinations using itertools.product
-thickness_set = set()
-for combination in product(range(n), repeat=len(dx)):
-    total_thickness = sum(count * thickness for count, thickness in zip(combination, dx))
-    thickness_set.add(total_thickness)
+thickness_list: list[Thickness] = []
+for combination in product(range(n), repeat=len(foils)):
+    perm = []
+    perm_str: list[str] = []
+    for count, thickness in zip(combination, foils):
+        perm.append(thickness * count)
+        perm_str.append(f"{count} x {thickness} µm")
 
-tot_dx = sorted(list(thickness_set))
+    total_thickness = sum(perm)
+    thickness_list.append(Thickness(total_thickness, perm_str))
 
-print("Possible Al combination (in µm):", tot_dx)
+# only keep unique thicknesses, take the one that has the smaller error
+thickness_set: set[Thickness] = set()
+for thickness in thickness_list:
+    # try to get the existing thickness with the same value
+    for existing in thickness_set.copy():
+        if existing.dx.n == thickness.dx.n:
+            # if it exists, check if the new one has less error
+            if thickness.dx.s < existing.dx.s:
+                thickness_set.remove(existing)
+                thickness_set.add(thickness)
+            break
+    else:
+        # if it doesn't exist, add the new thickness
+        thickness_set.add(thickness)
+
+tot_dx = sorted(list(thickness_set), key=lambda x: x.dx)
 
 sub_set = tot_dx[1:] # remove the first element for obvious reasons
 
-print("Selected thicknesses for simulation (in µm):", sub_set)
+for thickness in sub_set:
+    print(f"Thickness: {thickness.dx:.1f} µm, Foils: {thickness.foils}")
 
+
+# --------- Energy and Simulation Setup ---------
 E = 18.12  # MeV, beam energy -> from alex's beam energy measurement paper let's gooo!
 SIGMA_E = 0.07  # MeV
 
@@ -134,33 +168,38 @@ print(f"Estimated total simulation duration: {estimated_duration} seconds ({esti
 
 results = []
 for thickness in tqdm(sub_set, desc="Running simulations", unit="thickness"):
-    print(f"Simulation for thickness: {thickness} µm")
-    folder_base = os.path.join(trim_simulation_directory, f"{thickness}um")
+    print(f"Simulation for thickness: {thickness.dx} µm")
+
+    thickness_with_alu_foil = thickness.dx + alu_foil_thickness  # add the alu foil thickness for the simulation
+
+    folder_base = os.path.join(trim_simulation_directory, f"{thickness_with_alu_foil.n}um")
     os.makedirs(folder_base, exist_ok=True)
 
-    print(f"running simulation for thickness {thickness} µm in folder {folder_base}")
-    write_input_file(thickness, folder_base, E, N_PARTICLES)
+    print(f"running simulation for thickness {thickness_with_alu_foil} µm in folder {folder_base}")
+    write_input_file(thickness_with_alu_foil.n, folder_base, E, N_PARTICLES)
     run_trim_simulation(folder_base)
     mean_E, std_E, sem_E = extract_transmitted_energy(folder_base)
 
     folder_min = folder_base + "_min"
-    print(f"running simulation for thickness {thickness} µm in folder {folder_min}")
+    print(f"running simulation for thickness {thickness_with_alu_foil} µm in folder {folder_min}")
     os.makedirs(folder_min, exist_ok=True)
-    write_input_file(thickness - dx_err, folder_min, E + SIGMA_E, N_PARTICLES)
+    write_input_file(thickness_with_alu_foil.n - thickness_with_alu_foil.s, folder_min, E + SIGMA_E, N_PARTICLES)
     run_trim_simulation(folder_min)
     mean_E_min, *_ = extract_transmitted_energy(folder_min)
 
     folder_max = folder_base + "_max"
-    print(f"running simulation for thickness {thickness} µm in folder {folder_max}")
+    print(f"running simulation for thickness {thickness_with_alu_foil} µm in folder {folder_max}")
     os.makedirs(folder_max, exist_ok=True)
-    write_input_file(thickness + dx_err, folder_max, E - SIGMA_E, N_PARTICLES)
+    write_input_file(thickness_with_alu_foil.n + thickness_with_alu_foil.s, folder_max, E - SIGMA_E, N_PARTICLES)
     run_trim_simulation(folder_max)
     mean_E_max, *_ = extract_transmitted_energy(folder_max)
 
     sys_err = abs(mean_E_max - mean_E_min) / 2
 
     results.append({
-        "thickness_um": thickness,
+        "thickness_um": thickness_with_alu_foil.n,
+        "thickness_err_um": thickness_with_alu_foil.s,
+        "foils": ", ".join(thickness.foils),
         "mean_exit_energy_MeV": mean_E,
         "sem_energy_MeV": sem_E,
         "sys_err_MeV": sys_err,
@@ -170,7 +209,7 @@ for thickness in tqdm(sub_set, desc="Running simulations", unit="thickness"):
     # save in every iteration
     # append the results to a DataFrame and save it as a CSV file
     df_results = pd.DataFrame(results)
-    df_results.to_csv(f"simulation_results_partial.csv", index=False)
+    df_results.to_csv("simulation_results_partial.csv", index=False)
 
 
 
@@ -184,13 +223,19 @@ fig = go.Figure()
 fig.add_trace(go.Scatter(
     x=df_results['thickness_um'],
     y=df_results['mean_exit_energy_MeV'],
+    error_x=dict(
+        type='data',
+        array=df_results['thickness_err_um'],
+        color='gray',
+        thickness=1,
+        width=2
+    ),
     error_y=dict(
         type='data',
         array=df_results['total_err_MeV'],
-        visible=True,
-        color='red',
-        thickness=2,
-        width=3
+        color='gray',
+        thickness=1,
+        width=2
     ),
     mode='markers+lines',
     marker=dict(
@@ -203,9 +248,12 @@ fig.add_trace(go.Scatter(
         width=2
     ),
     name='Exit Energy',
+    customdata=df_results['foils'].values,
     hovertemplate='<b>Thickness:</b> %{x} µm<br>' +
+                  '<b>Thickness Error:</b> ±%{error_x.array:.4f} µm<br>' +
+                  '<b>Foils:</b> %{customdata}<br>' +
                   '<b>Exit Energy:</b> %{y:.4f} MeV<br>' +
-                  '<b>Total Error:</b> ±%{error_y.array:.4f} MeV<br>' +
+                  '<b>Energy Error:</b> ±%{error_y.array:.4f} MeV<br>' +
                   '<extra></extra>'
 ))
 
@@ -257,8 +305,7 @@ fig.add_annotation(
     xref='paper',
     yref='paper',
     text=f'Initial Energy: {E:.2f} ± {SIGMA_E:.2f} MeV<br>' +
-         f'Particles: {N_PARTICLES}<br>' +
-         f'Thickness Error: ±{dx_err} µm',
+         f'Particles: {N_PARTICLES}<br>',
     showarrow=False,
     font=dict(size=10),
     align='left',
@@ -280,5 +327,3 @@ for _, row in df_results.iterrows():
 
 print(f"\nTotal simulations completed: {len(df_results)}")
 print(f"Energy loss range: {df_results['mean_exit_energy_MeV'].min():.4f} - {df_results['mean_exit_energy_MeV'].max():.4f} MeV")
-
-

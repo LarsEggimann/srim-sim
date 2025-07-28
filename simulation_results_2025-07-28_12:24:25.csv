@@ -1,0 +1,2 @@
+thickness_um,thickness_err_um,foils,mean_exit_energy_MeV,sem_energy_MeV,sys_err_MeV,total_err_MeV
+88.0,7.0710678118654755,"1 x 25+/-5 µm, 1 x 50+/-5 µm, 0 x 125+/-5 µm, 0 x 200+/-5 µm, 0 x 300+/-5 µm",17.608832608695653,0.001813610355199723,0.11545322495630295,0.11546746873180853
