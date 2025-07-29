@@ -58,6 +58,8 @@ tot_dx = sorted(list(thickness_set), key=lambda x: x.dx)
 
 sub_set = tot_dx[1:] # remove the first element for obvious reasons
 
+sub_set = [t for t in sub_set if t.dx.n <= 1730]  # keep only thicknesses up to 1730 µm
+
 for thickness in sub_set:
     print(f"Thickness: {thickness.dx:.1f} µm, Foils: {thickness.foils}")
 
@@ -85,11 +87,11 @@ def run_trim_simulation(folder):
     try:
         os.chdir(TRIM_PATH.parent) # Change to the directory where TRIM is located
         process = subprocess.Popen(f'wine {TRIM_PATH}', shell=True) # Use wine to run TRIM since, damn Windows
-        process.wait(timeout=simulation_timeout)  # Wait max 10 seconds
+        process.wait(timeout=simulation_timeout)  # Wait timeout
     except subprocess.TimeoutExpired:
         process.terminate()  # Terminate if still running after timeout
         try:
-            process.wait(timeout=2)  # Give it 2 seconds to terminate gracefully
+            process.wait(timeout=1)  # Give it 1 second to terminate gracefully
         except subprocess.TimeoutExpired:
             process.kill()  # Force kill if it doesn't terminate
     finally:
